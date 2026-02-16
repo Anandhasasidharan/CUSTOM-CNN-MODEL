@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Dataset (too large for git)
+Cleaned_Datasets_Crops*/
+
+# Training outputs
+checkpoints/
+logs/
+
+# IDE
+.vscode/
+*.code-workspace
