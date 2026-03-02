@@ -44,21 +44,104 @@ def load_model(checkpoint_path: str = None, device=None):
     return model, idx_to_class, device
 
 
-# ─── Full test-set evaluation ────────────────────────────────────────────────
+# ─── Per-crop classification report ──────────────────────────────────────────
+def _save_crop_report(crop_name: str, all_labels, all_preds, idx_to_class):
+    """
+    Filter labels/preds to a single crop, then print & save a report
+    in the format shown in the target image:
+
+        Test Results:
+        Accuracy: X.XXXX
+        Precision (weighted): X.XXXX
+        Recall (weighted): X.XXXX
+        F1-score (weighted): X.XXXX
+
+        Classification Report:
+                              precision  recall  f1-score  support
+        ...
+    """
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+    # Find class indices that belong to this crop
+    crop_class_indices = []
+    disease_names = []
+    for idx in sorted(idx_to_class.keys() if isinstance(list(idx_to_class.keys())[0], int)
+                      else [int(k) for k in idx_to_class.keys()]):
+        name = idx_to_class[idx] if isinstance(idx, int) else idx_to_class[str(idx)]
+        # e.g. "Black_Gram - anthracnose"  →  crop prefix is before " - "
+        crop_prefix = name.split(" - ")[0]
+        if crop_prefix == crop_name:
+            crop_class_indices.append(idx)
+            disease_names.append(name.split(" - ", 1)[1])  # just disease name
+
+    if not crop_class_indices:
+        return
+
+    # Filter predictions/labels to only samples belonging to this crop
+    mask = np.isin(all_labels, crop_class_indices)
+    crop_labels = all_labels[mask]
+    crop_preds  = all_preds[mask]
+
+    if len(crop_labels) == 0:
+        return
+
+    # Remap to 0-based within the crop
+    idx_remap = {orig: new for new, orig in enumerate(crop_class_indices)}
+    crop_labels_local = np.array([idx_remap[l] for l in crop_labels])
+    crop_preds_local  = np.array([idx_remap[p] if p in idx_remap else -1
+                                  for p in crop_preds])
+
+    acc  = accuracy_score(crop_labels_local, crop_preds_local)
+    prec = precision_score(crop_labels_local, crop_preds_local,
+                           average="weighted", zero_division=0)
+    rec  = recall_score(crop_labels_local, crop_preds_local,
+                        average="weighted", zero_division=0)
+    f1   = f1_score(crop_labels_local, crop_preds_local,
+                    average="weighted", zero_division=0)
+
+    valid_labels = list(range(len(crop_class_indices)))
+    report = classification_report(crop_labels_local, crop_preds_local,
+                                   labels=valid_labels,
+                                   target_names=disease_names, digits=4, zero_division=0)
+
+    header = (
+        f"Test Results:\n"
+        f"Accuracy: {acc:.4f}\n"
+        f"Precision (weighted): {prec:.4f}\n"
+        f"Recall (weighted): {rec:.4f}\n"
+        f"F1-score (weighted): {f1:.4f}\n\n"
+        f"Classification Report:\n"
+    )
+
+    full_report = header + report
+
+    print(f"\n{'='*70}")
+    print(f"  {crop_name.upper()} — CROP REPORT")
+    print(f"{'='*70}")
+    print(full_report)
+
+    safe_name = crop_name.lower().replace(" ", "_")
+    report_path = os.path.join(config.LOG_DIR, f"classification_report_{safe_name}.txt")
+    with open(report_path, "w") as f:
+        f.write(full_report)
+    print(f"Report saved → {report_path}")
+
+
+# ─── Full val-set evaluation ─────────────────────────────────────────────────
 @torch.no_grad()
 def evaluate_test_set(model=None, idx_to_class=None, device=None):
-    """Run full evaluation on the test split and produce reports."""
+    """Run full evaluation on the val split and produce reports."""
     if model is None:
         model, idx_to_class, device = load_model()
 
-    _, _, test_loader, meta = get_dataloaders()
+    _, val_loader, meta = get_dataloaders()
     if idx_to_class is None:
         idx_to_class = meta["idx_to_class"]
 
     all_preds = []
     all_labels = []
 
-    for images, labels in tqdm(test_loader, desc="Evaluating"):
+    for images, labels in tqdm(val_loader, desc="Evaluating"):
         images = images.to(device, non_blocking=True)
         outputs = model(images)
         preds = outputs.argmax(dim=1).cpu().numpy()
@@ -68,23 +151,46 @@ def evaluate_test_set(model=None, idx_to_class=None, device=None):
     all_preds = np.array(all_preds)
     all_labels = np.array(all_labels)
 
-    # Class names in order
+    # Class names in order (resolve int or str keys)
     num_classes = len(idx_to_class)
-    class_names = [idx_to_class[i] if isinstance(i, int) else idx_to_class[str(i)]
-                   for i in range(num_classes)]
+    keys = list(idx_to_class.keys())
+    if isinstance(keys[0], str):
+        idx_to_class = {int(k): v for k, v in idx_to_class.items()}
+    class_names = [idx_to_class[i] for i in range(num_classes)]
 
-    # ── Classification report ────────────────────────────────────────────
+    # ── Overall classification report ────────────────────────────────────
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+    acc  = accuracy_score(all_labels, all_preds)
+    prec = precision_score(all_labels, all_preds, average="weighted", zero_division=0)
+    rec  = recall_score(all_labels, all_preds, average="weighted", zero_division=0)
+    f1   = f1_score(all_labels, all_preds, average="weighted", zero_division=0)
+
+    overall_header = (
+        f"Test Results:\n"
+        f"Accuracy: {acc:.4f}\n"
+        f"Precision (weighted): {prec:.4f}\n"
+        f"Recall (weighted): {rec:.4f}\n"
+        f"F1-score (weighted): {f1:.4f}\n\n"
+        f"Classification Report:\n"
+    )
     report = classification_report(all_labels, all_preds,
-                                   target_names=class_names, digits=3, zero_division=0)
+                                   target_names=class_names, digits=4, zero_division=0)
+    full_report = overall_header + report
+
     print("\n" + "=" * 80)
-    print("  CLASSIFICATION REPORT")
+    print("  OVERALL CLASSIFICATION REPORT")
     print("=" * 80)
-    print(report)
+    print(full_report)
 
     report_path = os.path.join(config.LOG_DIR, "classification_report.txt")
     with open(report_path, "w") as f:
-        f.write(report)
-    print(f"Report saved → {report_path}")
+        f.write(full_report)
+    print(f"Overall report saved → {report_path}")
+
+    # ── Per-crop reports ──────────────────────────────────────────────────
+    crop_names = sorted({name.split(" - ")[0] for name in class_names})
+    for crop in crop_names:
+        _save_crop_report(crop, all_labels, all_preds, idx_to_class)
 
     # ── Confusion matrix ─────────────────────────────────────────────────
     cm = confusion_matrix(all_labels, all_preds)

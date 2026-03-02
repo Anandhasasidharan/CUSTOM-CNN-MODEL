@@ -7,7 +7,7 @@ import os
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_ROOT = os.path.join(BASE_DIR, "Cleaned_Datasets_Crops - Copy")
+DATASET_ROOT = r"D:\college\DATASET\Augmented_Dataset"
 SAVE_DIR = os.path.join(BASE_DIR, "checkpoints")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
@@ -18,22 +18,21 @@ os.makedirs(LOG_DIR, exist_ok=True)
 IMG_SIZE = 224                   # Input image resolution
 VALID_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-# Train / Val / Test split ratios
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
+# Train / Val split ratio
+TRAIN_RATIO = 0.80
+VAL_RATIO = 0.20
 
 # ─── Reproducibility ─────────────────────────────────────────────────────────
 RANDOM_SEED = 42
 
 # ─── Training ─────────────────────────────────────────────────────────────────
-BATCH_SIZE = 32
-NUM_EPOCHS = 50
-LEARNING_RATE = 1e-3
+BATCH_SIZE = 64
+NUM_EPOCHS = 40
+LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 1e-4
-STEP_LR_SIZE = 15               # Drop LR every N epochs
-STEP_LR_GAMMA = 0.3             # Multiply LR by this factor
-EARLY_STOP_PATIENCE = 10        # Stop if val loss doesn't improve for N epochs
+STEP_LR_SIZE = 10               # Drop LR every N epochs
+STEP_LR_GAMMA = 0.5             # Multiply LR by this factor
+EARLY_STOP_PATIENCE = 12        # Stop if val loss doesn't improve for N epochs
 
 # ─── Device ───────────────────────────────────────────────────────────────────
 NUM_WORKERS = 0                  # 0 is safest on Windows (avoids spawn issues)

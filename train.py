@@ -115,7 +115,7 @@ def train():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
     # Data
-    train_loader, val_loader, test_loader, meta = get_dataloaders()
+    train_loader, val_loader, meta = get_dataloaders()
     num_classes = meta["num_classes"]
     idx_to_class = meta["idx_to_class"]
 
@@ -219,13 +219,13 @@ def train():
     print(f"  Best epoch: {best_epoch}  |  Best val loss: {best_val_loss:.4f}")
     print(f"{'='*60}")
 
-    # ── Final test evaluation ────────────────────────────────────────────────
-    print("\nLoading best model for test evaluation...")
+    # ── Final evaluation on val set with best model ─────────────────────────
+    print("\nLoading best model for final evaluation...")
     ckpt = torch.load(os.path.join(config.SAVE_DIR, "best_model.pth"), map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
 
-    test_loss, test_acc = evaluate(model, test_loader, criterion, device)
-    print(f"  Test Loss: {test_loss:.4f}  |  Test Acc: {test_acc*100:.2f}%")
+    val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+    print(f"  Val Loss: {val_loss:.4f}  |  Val Acc: {val_acc*100:.2f}%")
 
     return model
 

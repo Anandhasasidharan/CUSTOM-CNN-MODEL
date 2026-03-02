@@ -125,35 +125,39 @@ class CropDiseaseDataset(Dataset):
 
 # ─── Split & DataLoaders ─────────────────────────────────────────────────────
 def split_dataset(samples, train_ratio=config.TRAIN_RATIO,
-                  val_ratio=config.VAL_RATIO, seed=config.RANDOM_SEED):
-    """Stratified split into train / val / test."""
+                  seed=config.RANDOM_SEED):
+    """Stratified 80/20 split into train / val.
+
+    Classes with fewer than 2 samples are placed entirely into the
+    training set (stratified splitting needs at least 2 members).
+    """
     from sklearn.model_selection import train_test_split
 
-    paths, labels = zip(*samples)
+    # Separate rare classes that can't be stratified
+    label_counts = Counter(label for _, label in samples)
+    safe_samples = [(p, l) for p, l in samples if label_counts[l] >= 2]
+    rare_samples = [(p, l) for p, l in samples if label_counts[l] < 2]
+
+    if rare_samples:
+        rare_classes = {l for _, l in rare_samples}
+        print(f"  Note: {len(rare_samples)} image(s) from {len(rare_classes)} "
+              f"rare class(es) added directly to train set.")
+
+    paths, labels = zip(*safe_samples)
     paths, labels = list(paths), list(labels)
 
-    # First split: train vs (val+test)
-    X_train, X_temp, y_train, y_temp = train_test_split(
+    # Single split: train vs val
+    X_train, X_val, y_train, y_val = train_test_split(
         paths, labels,
         test_size=(1 - train_ratio),
         stratify=labels,
         random_state=seed,
     )
 
-    # Second split: val vs test  (50-50 of the remaining)
-    relative_val = val_ratio / (val_ratio + (1 - train_ratio - val_ratio))
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp,
-        test_size=(1 - relative_val),
-        stratify=y_temp,
-        random_state=seed,
-    )
-
-    train_samples = list(zip(X_train, y_train))
+    train_samples = list(zip(X_train, y_train)) + rare_samples
     val_samples = list(zip(X_val, y_val))
-    test_samples = list(zip(X_test, y_test))
 
-    return train_samples, val_samples, test_samples
+    return train_samples, val_samples
 
 
 def make_weighted_sampler(samples):
@@ -174,22 +178,21 @@ def make_weighted_sampler(samples):
 def get_dataloaders(dataset_root: str = config.DATASET_ROOT,
                     batch_size: int = config.BATCH_SIZE):
     """
-    Build and return train / val / test DataLoaders plus metadata.
+    Build and return train / val DataLoaders plus metadata.
     """
     class_to_idx, idx_to_class, samples, crop_to_idx, _ = build_class_mapping(dataset_root)
     num_classes = len(class_to_idx)
 
-    train_samples, val_samples, test_samples = split_dataset(samples)
+    train_samples, val_samples = split_dataset(samples)
 
     print(f"Dataset Summary:")
     print(f"  Total images : {len(samples)}")
     print(f"  Num classes  : {num_classes}")
-    print(f"  Train / Val / Test : {len(train_samples)} / {len(val_samples)} / {len(test_samples)}")
+    print(f"  Train / Val  : {len(train_samples)} / {len(val_samples)}")
     print()
 
     train_ds = CropDiseaseDataset(train_samples, transform=get_train_transforms())
     val_ds = CropDiseaseDataset(val_samples, transform=get_val_transforms())
-    test_ds = CropDiseaseDataset(test_samples, transform=get_val_transforms())
 
     sampler = make_weighted_sampler(train_samples)
 
@@ -201,10 +204,6 @@ def get_dataloaders(dataset_root: str = config.DATASET_ROOT,
         val_ds, batch_size=batch_size, shuffle=False,
         num_workers=config.NUM_WORKERS, pin_memory=config.PIN_MEMORY,
     )
-    test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=config.NUM_WORKERS, pin_memory=config.PIN_MEMORY,
-    )
 
     meta = {
         "num_classes": num_classes,
@@ -213,7 +212,6 @@ def get_dataloaders(dataset_root: str = config.DATASET_ROOT,
         "crop_to_idx": crop_to_idx,
         "train_samples": train_samples,
         "val_samples": val_samples,
-        "test_samples": test_samples,
     }
 
-    return train_loader, val_loader, test_loader, meta
+    return train_loader, val_loader, meta
