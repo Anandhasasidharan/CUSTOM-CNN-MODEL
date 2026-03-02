@@ -1,0 +1,20 @@
+Test Results:
+Accuracy: 0.9615
+Precision (weighted): 0.9798
+Recall (weighted): 0.9615
+F1-score (weighted): 0.9701
+
+Classification Report:
+                      precision    recall  f1-score   support
+
+Cercospora leaf spot     0.9913    0.9500    0.9702       120
+              Insect     0.9524    1.0000    0.9756       100
+         anthracnose     1.0000    0.9500    0.9744       100
+             healthy     0.9202    0.9868    0.9524       152
+       leaf crinckle     0.9891    0.9476    0.9679       191
+      powdery mildew     0.9899    0.9800    0.9849       100
+       yellow mosaic     0.9945    0.9500    0.9717       380
+
+           micro avg     0.9786    0.9615    0.9700      1143
+           macro avg     0.9768    0.9664    0.9710      1143
+        weighted avg     0.9798    0.9615    0.9701      1143

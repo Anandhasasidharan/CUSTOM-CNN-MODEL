@@ -1,0 +1,28 @@
+Test Results:
+Accuracy: 0.9760
+Precision (weighted): 0.9771
+Recall (weighted): 0.9760
+F1-score (weighted): 0.9763
+
+Classification Report:
+                       precision    recall  f1-score   support
+
+    Bacterial Pustule     0.9388    0.9200    0.9293       100
+    Frogeye Leaf Spot     0.9706    0.9900    0.9802       100
+               Healty     1.0000    1.0000    1.0000       100
+        Mossaic Virus     1.0000    0.9900    0.9950       100
+                 Rust     0.8692    0.9300    0.8986       100
+      Southern blight     0.9901    1.0000    0.9950       100
+Sudden Death Syndrone     0.9796    0.9600    0.9697       100
+     Target Leaf Spot     0.9667    0.8700    0.9158       100
+        Yellow Mosaic     0.9615    1.0000    0.9804       100
+     bacterial_blight     1.0000    1.0000    1.0000       100
+           brown_spot     1.0000    1.0000    1.0000       100
+          crestamento     1.0000    1.0000    1.0000       100
+             ferrugen     1.0000    0.9900    0.9950       100
+       powdery_mildew     1.0000    0.9900    0.9950       100
+             septoria     0.9804    1.0000    0.9901       100
+
+            micro avg     0.9767    0.9760    0.9763      1500
+            macro avg     0.9771    0.9760    0.9763      1500
+         weighted avg     0.9771    0.9760    0.9763      1500

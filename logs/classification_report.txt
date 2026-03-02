@@ -1,0 +1,46 @@
+Test Results:
+Accuracy: 0.9655
+Precision (weighted): 0.9668
+Recall (weighted): 0.9655
+F1-score (weighted): 0.9656
+
+Classification Report:
+                                        precision    recall  f1-score   support
+
+     Black_Gram - Cercospora leaf spot     0.9913    0.9500    0.9702       120
+                   Black_Gram - Insect     0.9434    1.0000    0.9709       100
+              Black_Gram - anthracnose     1.0000    0.9500    0.9744       100
+                  Black_Gram - healthy     0.9146    0.9868    0.9494       152
+            Black_Gram - leaf crinckle     0.9891    0.9476    0.9679       191
+           Black_Gram - powdery mildew     0.9899    0.9800    0.9849       100
+            Black_Gram - yellow mosaic     0.9918    0.9500    0.9704       380
+             Cotton - Bacterial Blight     0.9515    0.9800    0.9655       100
+                   Cotton - Curl Virus     0.9670    0.8800    0.9215       100
+                 Cotton - Healthy Leaf     0.9608    0.9800    0.9703       100
+      Cotton - Herbicide Growth Damage     0.9434    1.0000    0.9709       100
+          Cotton - Leaf Hopper Jassids     0.9608    0.9800    0.9703       100
+                 Cotton - Leaf Redding     0.9684    0.9200    0.9436       100
+             Cotton - Leaf Variegation     1.0000    1.0000    1.0000       100
+Cotton - curl_stage1+curl_stage2+sooty     0.9109    0.9200    0.9154       100
+            Cotton - curl_stage1+sooty     0.9000    0.9000    0.9000       100
+                  Cotton - curl_stage2     0.9898    0.9700    0.9798       100
+            Cotton - curl_stage2+sooty     0.9899    0.9800    0.9849       100
+           Soybean - Bacterial Pustule     0.9388    0.9200    0.9293       100
+           Soybean - Frogeye Leaf Spot     0.9706    0.9900    0.9802       100
+                      Soybean - Healty     0.9804    1.0000    0.9901       100
+               Soybean - Mossaic Virus     1.0000    0.9900    0.9950       100
+                        Soybean - Rust     0.8532    0.9300    0.8900       100
+             Soybean - Southern blight     0.9804    1.0000    0.9901       100
+       Soybean - Sudden Death Syndrone     0.9796    0.9600    0.9697       100
+            Soybean - Target Leaf Spot     0.9457    0.8700    0.9062       100
+               Soybean - Yellow Mosaic     0.8547    1.0000    0.9217       100
+            Soybean - bacterial_blight     1.0000    1.0000    1.0000       100
+                  Soybean - brown_spot     1.0000    1.0000    1.0000       100
+                 Soybean - crestamento     1.0000    1.0000    1.0000       100
+                    Soybean - ferrugen     1.0000    0.9900    0.9950       100
+              Soybean - powdery_mildew     1.0000    0.9900    0.9950       100
+                    Soybean - septoria     0.9709    1.0000    0.9852       100
+
+                              accuracy                         0.9655      3743
+                             macro avg     0.9647    0.9671    0.9654      3743
+                          weighted avg     0.9668    0.9655    0.9656      3743

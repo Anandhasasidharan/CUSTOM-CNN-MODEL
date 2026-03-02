@@ -1,0 +1,24 @@
+Test Results:
+Accuracy: 0.9555
+Precision (weighted): 0.9584
+Recall (weighted): 0.9555
+F1-score (weighted): 0.9566
+
+Classification Report:
+                               precision    recall  f1-score   support
+
+             Bacterial Blight     0.9515    0.9800    0.9655       100
+                   Curl Virus     0.9670    0.8800    0.9215       100
+                 Healthy Leaf     0.9608    0.9800    0.9703       100
+      Herbicide Growth Damage     0.9434    1.0000    0.9709       100
+          Leaf Hopper Jassids     0.9608    0.9800    0.9703       100
+                 Leaf Redding     0.9684    0.9200    0.9436       100
+             Leaf Variegation     1.0000    1.0000    1.0000       100
+curl_stage1+curl_stage2+sooty     0.9109    0.9200    0.9154       100
+            curl_stage1+sooty     0.9000    0.9000    0.9000       100
+                  curl_stage2     0.9898    0.9700    0.9798       100
+            curl_stage2+sooty     0.9899    0.9800    0.9849       100
+
+                    micro avg     0.9581    0.9555    0.9568      1100
+                    macro avg     0.9584    0.9555    0.9566      1100
+                 weighted avg     0.9584    0.9555    0.9566      1100
