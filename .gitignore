@@ -10,6 +10,7 @@ Cleaned_Datasets_Crops*/
 # Training outputs
 checkpoints/
 logs/
+reports/
 
 # IDE
 .vscode/
