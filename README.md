@@ -237,10 +237,6 @@ Each of the following was found by reading behaviour, not by grid-searching:
 - Windows-safe defaults (`num_workers=0`, `__main__` guard) so the pipeline runs on the
   same laptop it was written on.
 
-> **Domain note.** This project is agricultural computer vision. The preprocessing,
-> modelling, reporting and diagnostic competencies above are domain-transferable; no
-> supply-chain or product-configuration domain experience is claimed here.
-
 ---
 
 ## Limitations
