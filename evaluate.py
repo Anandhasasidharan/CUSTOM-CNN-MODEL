@@ -10,6 +10,23 @@ Evaluation & Inference script for CropDiseaseNet.
 import os
 import csv
 
+# ── The stage must be selected BEFORE config is imported ─────────────────────
+def _parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description="Evaluate one stage's checkpoint.")
+    p.add_argument("--stage", default=None,
+                   choices=["scratch", "pretrain", "finetune"],
+                   help="Which stage to evaluate (default: $CNN_STAGE)")
+    p.add_argument("--checkpoint", default=None, help="Explicit checkpoint path")
+    p.add_argument("--dataset", default=None, help="Override DATASET_ROOT")
+    p.add_argument("--img-size", type=int, default=None, help="Override IMG_SIZE")
+    return p.parse_args()
+
+
+ARGS = _parse_args()
+if ARGS.stage:
+    os.environ["CNN_STAGE"] = ARGS.stage
+
 import numpy as np
 import torch
 import matplotlib
@@ -19,6 +36,11 @@ from sklearn.metrics import classification_report, confusion_matrix
 from tqdm import tqdm
 
 import config
+
+if ARGS.dataset:
+    config.DATASET_ROOT = ARGS.dataset
+if ARGS.img_size:
+    config.IMG_SIZE = ARGS.img_size
 from dataset import get_dataloaders, get_val_transforms
 from model import build_model
 from PIL import Image
@@ -30,18 +52,25 @@ def load_model(checkpoint_path: str = None, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if checkpoint_path is None:
-        checkpoint_path = os.path.join(config.SAVE_DIR, "best_model.pth")
+        checkpoint_path = ARGS.checkpoint or os.path.join(config.SAVE_DIR, "best_model.pth")
 
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     num_classes = ckpt["num_classes"]
     idx_to_class = ckpt["idx_to_class"]
+    architecture = ckpt.get("architecture", "custom")
 
-    model = build_model(num_classes=num_classes)
+    # Rebuild the same architecture the checkpoint came from, without
+    # re-downloading ImageNet weights and without re-initialising (the
+    # state_dict load supplies every weight).
+    model = build_model(num_classes=num_classes, architecture=architecture,
+                        pretrained=False, init_weights=False)
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
 
-    print(f"Loaded checkpoint from epoch {ckpt['epoch']}  (val_acc={ckpt['val_acc']*100:.2f}%)")
+    print(f"Loaded {ckpt.get('stage', '?')}/{architecture} from epoch "
+          f"{ckpt['epoch']}  (val_acc={ckpt['val_acc']*100:.2f}%)")
     return model, idx_to_class, device
+
 
 
 # ─── Per-crop classification report ──────────────────────────────────────────

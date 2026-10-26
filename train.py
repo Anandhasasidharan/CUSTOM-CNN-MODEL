@@ -1,48 +1,124 @@
 """
-Training script for CropDiseaseNet.
+Stage-aware training script for the crop-disease pipeline.
 
-Features
---------
-- Mixed-precision training (AMP) for speed on GPU
-- Learning-rate scheduling (StepLR)
-- Early stopping based on validation loss
-- Saves best model checkpoint
-- Logs training curves to CSV + plots
+Stages
+------
+    python train.py --stage scratch     # custom CNN, random init, small subset
+    python train.py --stage pretrain    # ImageNet backbone -> full PlantVillage
+    python train.py --stage finetune    # PlantVillage backbone -> PlantDoc
+
+What is different from the original script
+------------------------------------------
+* Per-stage config (see config.py) with per-stage output folders, so the three
+  runs no longer overwrite each other's checkpoints and logs.
+* Two-phase fine-tuning: classifier head only for the first N epochs, then the
+  whole backbone at a much lower LR. Unfreezing everything at once at a high LR
+  destroys pretrained features when there are only ~2.6k images.
+* Frozen BatchNorm layers are held in eval mode, so a frozen backbone cannot
+  drift its running statistics onto the new dataset.
+* Single LambdaLR replaces the previous warm-up class, which used to skip
+  StepLR steps and desynchronise the LR schedule.
+* Writes logs/<stage>/summary.json for the cross-stage comparison report.
 """
 
-import os
+import argparse
 import csv
-import time
 import json
+import math
+import os
+import time
 
-import torch
-import torch.nn as nn
-from torch.amp import GradScaler, autocast
-from tqdm import tqdm
+# ── The stage must be selected BEFORE config is imported ─────────────────────
+def _parse_args():
+    p = argparse.ArgumentParser(description="Train one stage of the pipeline.")
+    p.add_argument("--stage", default=None,
+                   choices=["scratch", "pretrain", "finetune"],
+                   help="Which stage to run (default: $CNN_STAGE or scratch)")
+    p.add_argument("--epochs", type=int, default=None, help="Override NUM_EPOCHS")
+    p.add_argument("--batch-size", type=int, default=None, help="Override BATCH_SIZE")
+    p.add_argument("--img-size", type=int, default=None, help="Override IMG_SIZE")
+    p.add_argument("--dataset", default=None, help="Override DATASET_ROOT")
+    p.add_argument("--num-workers", type=int, default=None)
+    p.add_argument("--no-sampler", action="store_true",
+                   help="Disable the class-balanced sampler")
+    return p.parse_args()
 
-import config
-from dataset import get_dataloaders
-from model import build_model
+
+ARGS = _parse_args()
+if ARGS.stage:
+    os.environ["CNN_STAGE"] = ARGS.stage
+
+import config                                                    # noqa: E402
+
+if ARGS.epochs:
+    config.NUM_EPOCHS = ARGS.epochs
+if ARGS.batch_size:
+    config.BATCH_SIZE = ARGS.batch_size
+if ARGS.img_size:
+    config.IMG_SIZE = ARGS.img_size
+if ARGS.dataset:
+    config.DATASET_ROOT = ARGS.dataset
+if ARGS.num_workers is not None:
+    config.NUM_WORKERS = ARGS.num_workers
+if ARGS.no_sampler:
+    config.USE_WEIGHTED_SAMPLER = False
+
+import torch                                                     # noqa: E402
+import torch.nn as nn                                            # noqa: E402
+from torch.amp import GradScaler, autocast                        # noqa: E402
+from tqdm import tqdm                                             # noqa: E402
+
+from dataset import get_dataloaders                               # noqa: E402
+from model import (build_model, set_backbone_trainable,           # noqa: E402
+                   set_backbone_bn_eval, head_parameters,
+                   backbone_parameters)
 
 
-# ─── Utility ──────────────────────────────────────────────────────────────────
+# ─── Utility ─────────────────────────────────────────────────────────────────
 def accuracy(output, target):
-    """Top-1 accuracy."""
     _, preds = output.max(1)
-    correct = preds.eq(target).sum().item()
-    return correct / target.size(0)
+    return preds.eq(target).sum().item() / target.size(0)
 
 
-# ─── Training for one epoch ──────────────────────────────────────────────────
-def train_one_epoch(model, loader, criterion, optimizer, scaler, device):
+def banner(text, char="=", width=78):
+    print(f"\n{char * width}\n  {text}\n{char * width}")
+
+
+def make_scheduler(optimizer, total_epochs, warmup_epochs, kind,
+                   step_size, gamma):
+    """One scheduler for warm-up + decay, so the two never fight.
+
+    Returns a LambdaLR whose multiplier is:
+        linear ramp 0->1 over warmup_epochs, then
+        cosine decay, or a step decay every step_size epochs.
+    """
+    def schedule(epoch):
+        if warmup_epochs > 0 and epoch < warmup_epochs:
+            return float(epoch + 1) / float(warmup_epochs)
+        if kind == "cosine":
+            span = max(1, total_epochs - warmup_epochs)
+            progress = min(1.0, (epoch - warmup_epochs) / span)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        progress = (epoch - warmup_epochs) // max(1, step_size)
+        return float(gamma ** progress)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, schedule)
+
+
+# ─── One epoch ───────────────────────────────────────────────────────────────
+def train_one_epoch(model, loader, criterion, optimizer, scaler, device,
+                    freeze_backbone=False):
     model.train()
-    running_loss = 0.0
-    running_acc = 0.0
+    if freeze_backbone:
+        set_backbone_bn_eval(model)
+
+    running_loss = running_acc = 0.0
     total = 0
 
     pbar = tqdm(loader, desc="  Train", leave=False)
     for images, labels in pbar:
-        images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -54,130 +130,143 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device):
         scaler.step(optimizer)
         scaler.update()
 
-        batch_size = labels.size(0)
-        running_loss += loss.item() * batch_size
-        running_acc += accuracy(outputs, labels) * batch_size
-        total += batch_size
-
-        pbar.set_postfix(loss=f"{running_loss/total:.4f}", acc=f"{running_acc/total:.4f}")
+        bs = labels.size(0)
+        running_loss += loss.item() * bs
+        running_acc += accuracy(outputs, labels) * bs
+        total += bs
+        pbar.set_postfix(loss=f"{running_loss/total:.4f}",
+                         acc=f"{running_acc/total:.4f}")
 
     return running_loss / total, running_acc / total
 
 
-# ─── Learning-rate warm-up helper ─────────────────────────────────────────────
-class LinearWarmupScheduler:
-    """Linearly ramp LR from 0 → base_lr over `warmup_epochs` epochs."""
-
-    def __init__(self, optimizer, warmup_epochs: int = 2):
-        self.optimizer = optimizer
-        self.warmup_epochs = warmup_epochs
-        self.base_lrs = [pg["lr"] for pg in optimizer.param_groups]
-
-    def step(self, epoch: int):
-        """Call BEFORE the main scheduler during warmup epochs."""
-        if epoch > self.warmup_epochs:
-            return False  # warmup finished
-        factor = epoch / self.warmup_epochs
-        for pg, base_lr in zip(self.optimizer.param_groups, self.base_lrs):
-            pg["lr"] = base_lr * factor
-        return True  # still warming up
-
-
-# ─── Validation / Test for one epoch ─────────────────────────────────────────
 @torch.no_grad()
 def evaluate(model, loader, criterion, device):
     model.eval()
-    running_loss = 0.0
-    running_acc = 0.0
+    running_loss = running_acc = 0.0
     total = 0
 
     for images, labels in loader:
-        images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         with autocast(device_type=device.type, enabled=(device.type == "cuda")):
             outputs = model(images)
             loss = criterion(outputs, labels)
 
-        batch_size = labels.size(0)
-        running_loss += loss.item() * batch_size
-        running_acc += accuracy(outputs, labels) * batch_size
-        total += batch_size
+        bs = labels.size(0)
+        running_loss += loss.item() * bs
+        running_acc += accuracy(outputs, labels) * bs
+        total += bs
 
     return running_loss / total, running_acc / total
 
 
-# ─── Main training loop ──────────────────────────────────────────────────────
+# ─── Main ────────────────────────────────────────────────────────────────────
 def train():
-    # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Stage: {config.ACTIVE_STAGE}")
     print(f"Using device: {device}")
     if device.type == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
 
-    # Data
+    banner("Configuration")
+    print(f"  Dataset      : {config.DATASET_ROOT}")
+    print(f"  Architecture : {config.ARCHITECTURE}"
+          + (" (ImageNet weights)" if config.PRETRAINED else ""))
+    if config.INIT_CHECKPOINT:
+        print(f"  Warm start   : {config.INIT_CHECKPOINT}")
+    print(f"  Image size   : {config.IMG_SIZE}")
+    print(f"  Batch size   : {config.BATCH_SIZE}")
+    print(f"  Epochs       : {config.NUM_EPOCHS}")
+    print(f"  Head LR      : {config.HEAD_LR}")
+    print(f"  Backbone LR  : {config.BACKBONE_LR}")
+    print(f"  Freeze epochs: {config.FREEZE_BACKBONE_EPOCHS}")
+    print(f"  Scheduler    : {config.SCHEDULER}  (warmup {config.WARMUP_EPOCHS})")
+    print(f"  Sampler      : {'class-balanced' if config.USE_WEIGHTED_SAMPLER else 'plain'}")
+
+    # ── Data ──
     train_loader, val_loader, meta = get_dataloaders()
     num_classes = meta["num_classes"]
     idx_to_class = meta["idx_to_class"]
 
-    # Save class mapping
     mapping_path = os.path.join(config.SAVE_DIR, "class_mapping.json")
     with open(mapping_path, "w") as f:
         json.dump({str(k): v for k, v in idx_to_class.items()}, f, indent=2)
-    print(f"Class mapping saved → {mapping_path}")
+    print(f"Class mapping saved -> {mapping_path}")
 
-    # Model
-    model = build_model(num_classes=num_classes).to(device)
+    # ── Model ──
+    model = build_model(
+        num_classes=num_classes,
+        architecture=config.ARCHITECTURE,
+        pretrained=config.PRETRAINED,
+        init_weights=not bool(config.INIT_CHECKPOINT),
+        dropout=config.DROPOUT,
+        init_from=config.INIT_CHECKPOINT,
+    ).to(device)
 
-    # Loss (with label smoothing for regularisation)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # ── Freeze phase ──
+    frozen = config.FREEZE_BACKBONE_EPOCHS > 0
+    if frozen:
+        set_backbone_trainable(model, False)
+        print(f"Backbone frozen for the first {config.FREEZE_BACKBONE_EPOCHS} "
+              f"epoch(s); head only.")
 
-    # Optimiser
+    criterion = nn.CrossEntropyLoss(label_smoothing=config.LABEL_SMOOTHING)
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.LEARNING_RATE,
+        [
+            {"params": backbone_parameters(model), "lr": config.BACKBONE_LR,
+             "weight_decay": config.WEIGHT_DECAY, "name": "backbone"},
+            {"params": head_parameters(model), "lr": config.HEAD_LR,
+             "weight_decay": config.WEIGHT_DECAY, "name": "head"},
+        ],
+        lr=config.HEAD_LR,
         weight_decay=config.WEIGHT_DECAY,
     )
 
-    # Scheduler (with 2-epoch linear warm-up)
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=config.STEP_LR_SIZE,
-        gamma=config.STEP_LR_GAMMA,
-    )
-    warmup = LinearWarmupScheduler(optimizer, warmup_epochs=2)
+    scheduler = make_scheduler(optimizer, config.NUM_EPOCHS,
+                               config.WARMUP_EPOCHS, config.SCHEDULER,
+                               config.STEP_LR_SIZE, config.STEP_LR_GAMMA)
 
-    # AMP scaler
     scaler = GradScaler(device=device.type, enabled=(device.type == "cuda"))
 
-    # Logging
+    # ── Logging ──
     log_path = os.path.join(config.LOG_DIR, "training_log.csv")
     log_file = open(log_path, "w", newline="")
     log_writer = csv.writer(log_file)
-    log_writer.writerow(["epoch", "train_loss", "train_acc", "val_loss", "val_acc", "lr"])
+    log_writer.writerow(["epoch", "train_loss", "train_acc",
+                         "val_loss", "val_acc", "lr"])
 
-    # Early stopping state
     best_val_loss = float("inf")
-    patience_counter = 0
+    best_val_acc = 0.0
     best_epoch = 0
+    patience = 0
+    ckpt_path = os.path.join(config.SAVE_DIR, "best_model.pth")
 
-    print(f"\n{'='*60}")
-    print(f"  Training CropDiseaseNet  |  {num_classes} classes  |  {config.NUM_EPOCHS} epochs")
-    print(f"{'='*60}\n")
-
-    start_time = time.time()
+    banner(f"Training {config.ACTIVE_STAGE}  |  {num_classes} classes  |  "
+           f"{config.NUM_EPOCHS} epochs")
+    start = time.time()
 
     for epoch in range(1, config.NUM_EPOCHS + 1):
-        lr = optimizer.param_groups[0]["lr"]
-        print(f"Epoch {epoch}/{config.NUM_EPOCHS}  (lr={lr:.6f})")
+        lr = optimizer.param_groups[1]["lr"]
 
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device)
+        if frozen and epoch > config.FREEZE_BACKBONE_EPOCHS:
+            frozen = False
+            set_backbone_trainable(model, True)
+            print(f"  >> Unfroze backbone at epoch {epoch} "
+                  f"(backbone LR {optimizer.param_groups[0]['lr']:.2e})")
+
+        print(f"Epoch {epoch}/{config.NUM_EPOCHS}  (head lr={lr:.2e}"
+              f"{', frozen backbone' if frozen else ''})")
+
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler, device,
+            freeze_backbone=frozen)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
-        # Warm-up overrides scheduler for the first N epochs
-        if not warmup.step(epoch):
-            scheduler.step()
+        scheduler.step()
 
-        # Log
         log_writer.writerow([epoch, f"{train_loss:.5f}", f"{train_acc:.5f}",
                              f"{val_loss:.5f}", f"{val_acc:.5f}", f"{lr:.6f}"])
         log_file.flush()
@@ -185,12 +274,10 @@ def train():
         print(f"  Train Loss: {train_loss:.4f}  |  Train Acc: {train_acc*100:.2f}%")
         print(f"  Val   Loss: {val_loss:.4f}  |  Val   Acc: {val_acc*100:.2f}%")
 
-        # Checkpoint best model
         if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            best_epoch = epoch
-            ckpt_path = os.path.join(config.SAVE_DIR, "best_model.pth")
+            best_val_loss, best_epoch = val_loss, epoch
+            best_val_acc = val_acc
+            patience = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
@@ -199,33 +286,64 @@ def train():
                 "val_acc": val_acc,
                 "num_classes": num_classes,
                 "idx_to_class": idx_to_class,
+                "architecture": config.ARCHITECTURE,
+                "stage": config.ACTIVE_STAGE,
+                "img_size": config.IMG_SIZE,
             }, ckpt_path)
-            print(f"  ✓ Best model saved (val_loss={val_loss:.4f})")
+            print(f"  [best] saved (val_loss={val_loss:.4f})")
         else:
-            patience_counter += 1
-            print(f"  No improvement ({patience_counter}/{config.EARLY_STOP_PATIENCE})")
+            patience += 1
+            print(f"  No improvement ({patience}/{config.EARLY_STOP_PATIENCE})")
 
-        if patience_counter >= config.EARLY_STOP_PATIENCE:
-            print(f"\n  Early stopping triggered at epoch {epoch}.")
+        if patience >= config.EARLY_STOP_PATIENCE:
+            print(f"\n  Early stopping at epoch {epoch}.")
             break
-
         print()
 
     log_file.close()
-    elapsed = time.time() - start_time
+    elapsed = time.time() - start
 
-    print(f"\n{'='*60}")
-    print(f"  Training complete in {elapsed/60:.1f} min")
-    print(f"  Best epoch: {best_epoch}  |  Best val loss: {best_val_loss:.4f}")
-    print(f"{'='*60}")
-
-    # ── Final evaluation on val set with best model ─────────────────────────
-    print("\nLoading best model for final evaluation...")
-    ckpt = torch.load(os.path.join(config.SAVE_DIR, "best_model.pth"), map_location=device, weights_only=False)
+    # ── Final evaluation with the best checkpoint ──
+    print("\nLoading best checkpoint for final evaluation...")
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
-
     val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-    print(f"  Val Loss: {val_loss:.4f}  |  Val Acc: {val_acc*100:.2f}%")
+
+    summary = {
+        "stage": config.ACTIVE_STAGE,
+        "architecture": config.ARCHITECTURE,
+        "pretrained": config.PRETRAINED,
+        "warm_start": config.INIT_CHECKPOINT,
+        "dataset": config.DATASET_ROOT,
+        "layout": meta["layout"],
+        "uses_official_split": meta["uses_official_split"],
+        "num_classes": num_classes,
+        "num_train": meta["num_train"],
+        "num_val": meta["num_val"],
+        "epochs_run": epoch,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss,
+        "best_val_acc": best_val_acc,
+        "final_val_loss": val_loss,
+        "final_val_acc": val_acc,
+        "elapsed_min": elapsed / 60.0,
+        "img_size": config.IMG_SIZE,
+        "batch_size": config.BATCH_SIZE,
+        "head_lr": config.HEAD_LR,
+        "backbone_lr": config.BACKBONE_LR,
+        "freeze_backbone_epochs": config.FREEZE_BACKBONE_EPOCHS,
+        "scheduler": config.SCHEDULER,
+    }
+    summary_path = os.path.join(config.LOG_DIR, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+
+    banner(f"Done in {elapsed/60:.1f} min  |  best epoch {best_epoch}  |  "
+           f"val acc {val_acc*100:.2f}%")
+    print(f"Checkpoint : {ckpt_path}")
+    print(f"Log        : {log_path}")
+    print(f"Summary    : {summary_path}")
+    print("\nNext: python report.py    (build the visual dashboard)")
 
     return model
 
